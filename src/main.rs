@@ -7,12 +7,14 @@ use std::sync::{
     Arc,
 };
 
+use anyhow::anyhow;
 use futures_util::{SinkExt, StreamExt, TryFutureExt};
-use tokio::sync::{mpsc, RwLock};
 use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::{mpsc, RwLock};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use warp::ws::{Message, WebSocket};
 use warp::Filter;
+
 use crate::messages::{IncomingMessage, OutgoingMessage};
 
 /// Our global unique user id counter.
@@ -40,7 +42,7 @@ async fn main() {
     let users = warp::any().map(move || users.clone());
 
     // GET /ws -> websocket upgrade
-    let chat = warp::path("ws")
+    let chat = warp::path!("ws")
         // The `ws()` filter will prepare Websocket handshake...
         .and(warp::ws())
         .and(users)
@@ -51,7 +53,7 @@ async fn main() {
         });
 
     // GET / -> index html
-    let index = warp::path::end().map(|| warp::reply::html("<html><body><h1>hello</h1></body></html>"));
+    let index = warp::path!().map(|| warp::reply::html("<html><body><h1>hello</h1></body></html>"));
 
     let routes = index.or(chat);
 
@@ -84,7 +86,13 @@ async fn user_connected(ws: WebSocket, users: Users, username: String) {
     });
 
     // Save the sender in our list of connected users.
-    users.write().await.insert(my_id, User { username: username.clone(), tx });
+    users.write().await.insert(
+        my_id,
+        User {
+            username: username.clone(),
+            tx,
+        },
+    );
 
     // Return a `Future` that is basically a state machine managing
     // this specific user's connection.
@@ -95,11 +103,20 @@ async fn user_connected(ws: WebSocket, users: Users, username: String) {
         let msg = match result {
             Ok(msg) => msg,
             Err(e) => {
-                eprintln!("websocket error(uid={}, username={}): {}", my_id, &username, e);
+                eprintln!(
+                    "websocket error(uid={}, username={}): {}",
+                    my_id, &username, e
+                );
                 break;
             }
         };
-        user_message(my_id, msg, &users, &username).await;
+        if let Err(e) = user_message(my_id, msg, &users, &username).await {
+            eprintln!(
+                "websocket handler error(uid={}, username={}): {}",
+                my_id, &username, e
+            );
+            break;
+        }
     }
 
     // user_ws_rx stream will keep processing as long as the user stays
@@ -107,33 +124,52 @@ async fn user_connected(ws: WebSocket, users: Users, username: String) {
     user_disconnected(my_id, &users).await;
 }
 
-async fn user_message(my_id: usize, msg: Message, users: &Users, username: &str) -> anyhow::Result<()> {
-    let incoming = serde_json::from_str::<IncomingMessage>(msg.to_str()?)?;
+async fn user_message(
+    my_id: usize,
+    msg: Message,
+    users: &Users,
+    username: &str,
+) -> anyhow::Result<()> {
+    let incoming = serde_json::from_str::<IncomingMessage>(
+        msg.to_str()
+            .map_err(|_| anyhow!("could not convert message to string"))?,
+    )?;
 
     match incoming {
-        IncomingMessage::Song { url } => {
-            send_all(serde_json::to_string(&OutgoingMessage::Pong)?, users);
-        },
+        IncomingMessage::AddSong { url } => {
+            send_all(serde_json::to_string(&OutgoingMessage::Pong)?, users).await;
+        }
+        IncomingMessage::DelSong { position } => {
+            send_all(serde_json::to_string(&OutgoingMessage::Pong)?, users).await;
+        }
         IncomingMessage::Volume { volume } => {
-            send_all(serde_json::to_string(&OutgoingMessage::Pong)?, users);
-        },
+            send_all(serde_json::to_string(&OutgoingMessage::Pong)?, users).await;
+        }
         IncomingMessage::Skip => {
-            send_all(serde_json::to_string(&OutgoingMessage::Pong)?, users);
-        },
+            send_all(serde_json::to_string(&OutgoingMessage::Pong)?, users).await;
+        }
+        IncomingMessage::Pause => {
+            send_all(serde_json::to_string(&OutgoingMessage::Pong)?, users).await;
+        }
+        IncomingMessage::Resume => {
+            send_all(serde_json::to_string(&OutgoingMessage::Pong)?, users).await;
+        }
         IncomingMessage::Ping => {
             // TODO: Get rid of useless hashmap lookup, just pass this from prev function..
-            if let Some(tx) = users.read().await.get(&my_id) {
-                tx.send(Message::text(serde_json::to_string(&OutgoingMessage::Pong)))
+            if let Some(user) = users.read().await.get(&my_id) {
+                user.tx.send(Message::text(serde_json::to_string(
+                    &OutgoingMessage::Pong,
+                )?))?;
             }
-        },
+        }
     };
 
     Ok(())
 }
 
 async fn send_all(message: String, users: &Users) {
-    for (&uid, tx) in users.read().await.iter() {
-        if let Err(_disconnected) = tx.send(Message::text(&message)) {
+    for (&uid, user) in users.read().await.iter() {
+        if let Err(_disconnected) = user.tx.send(Message::text(&message)) {
             // The tx is disconnected, our `user_disconnected` code
             // should be happening in another task, nothing more to
             // do here.

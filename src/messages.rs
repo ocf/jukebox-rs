@@ -1,5 +1,6 @@
 use std::collections::HashMap;
-use serde::{Serialize, Deserialize};
+
+use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
@@ -16,7 +17,13 @@ pub(crate) enum IncomingMessage {
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum OutgoingMessage {
-    NewState { song: Song, user: String, queues: HashMap<String, Vec<Song>>, volume: usize, usernames: Vec<String> },
+    NewState {
+        song: Song,
+        user: String,
+        queues: HashMap<String, Vec<Song>>,
+        volume: usize,
+        usernames: Vec<String>,
+    },
     Pong,
 }
 
