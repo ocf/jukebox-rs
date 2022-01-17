@@ -31,9 +31,28 @@ struct User {
     tx: UnboundedSender<Message>,
 }
 
+fn init_tracing() {
+    use atty::Stream;
+    use std::env::VarError;
+    use tracing_subscriber::EnvFilter;
+
+    let builder = tracing_subscriber::fmt().with_env_filter(EnvFilter::new(
+        match std::env::var("RUST_LOG") {
+            Ok(v) => v,
+            Err(VarError::NotPresent) => "info".to_owned(),
+            Err(e) => panic!("malformed RUST_LOG: {:?}", e),
+        },
+    ));
+    if atty::is(Stream::Stdout) {
+        builder.init();
+    } else {
+        builder.json().init();
+    }
+}
+
 #[tokio::main]
 async fn main() {
-    pretty_env_logger::init();
+    init_tracing();
 
     // Keep track of all connected users, key is usize, value
     // is a websocket sender.
